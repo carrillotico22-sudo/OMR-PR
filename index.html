@@ -1,233 +1,883 @@
+
 <!DOCTYPE html>
-<html lang="es">
+<html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <base target="_top">
-<title>OMR PRO – Detección Real de Cuadros</title>
-<script async src="https://docs.opencv.org/4.x/opencv.js" onload="opencvCargado()"></script>
+
+<!-- ================= LIBRERÍAS ================= -->
+<script src="https://docs.opencv.org/4.x/opencv.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
+
 <style>
-body{margin:0;background:#000;color:#fff;font-family:Arial,sans-serif;text-align:center}
-#contenedor{position:relative;width:100%;height:45vh;min-height:240px;overflow:hidden;background:#000}
-video{width:100%;height:100%;object-fit:contain;display:block;background:#000}
-canvas#overlay{position:absolute;top:0;left:0;width:100%;height:100%;object-fit:contain;pointer-events:none}
-button{padding:10px 18px;font-size:clamp(16px,3.8vw,23px);margin:5px;cursor:pointer;border:1px solid #777;border-radius:4px;background:#151515;color:#fff}
-button:disabled{opacity:.45;cursor:not-allowed}
-.correcta{color:lime}.incorrecta{color:red}
-#estado{margin:10px;font-size:clamp(17px,3.8vw,23px);padding:0 10px}
-#resultado{padding:8px 10px 24px;overflow-wrap:anywhere}
-#resultado div{margin:8px 0}
-#configuracion{font-size:14px;margin:8px auto;padding:0 10px;max-width:900px;color:#ccc}
-#apiUrl{width:min(94%,760px);box-sizing:border-box;padding:8px;background:#111;color:#fff;border:1px solid #666}
-#btnConfig{font-size:14px;padding:7px 12px}
+/* ================= DISEÑO GENERAL ================= */
+body{
+  margin:0;
+  background:#000;
+  color:#fff;
+  font-family:Arial;
+  text-align:center;
+}
+
+#contenedor{
+  position:relative;
+  width:100%;
+  height:45vh;
+  overflow:hidden;
+  background:black;
+}
+
+video{
+  width:100%;
+  height:auto;
+  display:block;
+}
+
+canvas{
+  position:absolute;
+  top:0;
+  left:0;
+  width:100%;
+  height:auto;
+  pointer-events:none;
+}
+
+button{
+  padding:10px 25px;
+  font-size:23px;
+  margin:5px;
+  cursor:pointer;
+}
+
+.correcta{color:lime}
+.incorrecta{color:red}
+
+#estado{
+  margin:10px;
+  font-size:23px;
+}
 </style>
 </head>
+
 <body>
+
 <h2>📷 OMR PRO – Detección Real de Cuadros</h2>
-<div id="configuracion">
-  <label for="apiUrl">URL de la aplicación web de Apps Script (/exec):</label><br>
-  <input id="apiUrl" type="url" placeholder="https://script.google.com/macros/s/ID_DE_IMPLEMENTACION/exec" autocomplete="url">
-  <button id="btnConfig" onclick="guardarConfiguracion()">Guardar URL</button>
-</div>
+
+<!-- ================= CONTENEDOR CÁMARA ================= -->
 <div id="contenedor">
   <video id="video" autoplay playsinline muted></video>
   <canvas id="overlay"></canvas>
   <canvas id="canvas" hidden></canvas>
 </div>
-<div id="estado">Inicializando cámara y OpenCV…</div>
-<button onclick="procesar()" id="btnProcesar" disabled>📸 Procesar OMR + QR</button>
+
+<div id="estado">Inicializando cámara…</div>
+
+<!-- ================= BOTONES ================= -->
+<button onclick="procesar()">📸 Procesar OMR + QR</button>
 <button onclick="enviar()" id="btnEnviar" disabled>📤 Enviar</button>
 <button onclick="reiniciar()">🔄 Reiniciar</button>
 <button onclick="toggleFlash()" id="btnFlash">🔦 Encender linterna</button>
+
 <div id="resultado"></div>
+
 <script>
 /* ==========================================================
    CONFIGURACIÓN
-   ========================================================== */
+========================================================== */
+
+const API_URL = "https://script.google.com/macros/s/AKfycbwvEKJ6OhNrFNAi-rZUwaD3grhiAUtqH-dt1dy6lRdhrCQuXSsuhRU77FGHj8PNvYRyBA/exec";
+
 const UMBRAL = 0.25;
-const AREA_OMR = {x:0.01,y:0.1,w:0.99,h:0.2};
-let respuestas=[], nota=0, rudeQR="", omrOK=false, qrOK=false;
-let videoTrack=null, flashEncendido=false, cvReady=false, procesando=false;
-let detalleActual=[];
-const video=document.getElementById("video");
-const canvas=document.getElementById("canvas");
-const overlay=document.getElementById("overlay");
-const ctx=canvas.getContext("2d");
-const ctxO=overlay.getContext("2d");
-const estado=document.getElementById("estado");
 
-function guardarConfiguracion(){
-  const url=document.getElementById('apiUrl').value.trim();
-  if(!/^https:\/\/script\.google\.com\/macros\/s\/.+\/exec(?:\?.*)?$/.test(url)){
-    estado.innerText='Pegue una URL válida de la aplicación web de Apps Script terminada en /exec.'; return;
+const AREA_OMR = {
+  x: 0.01,
+  y: 0.1,
+  w: 0.99,
+  h: 0.2
+};
+
+let respuestas = [];
+let nota = 0;
+let rudeQR = "";
+
+let omrOK = false;
+let qrOK = false;
+let procesando = false;
+let enviando = false;
+
+let videoTrack = null;
+let flashEncendido = false;
+
+const video = document.getElementById("video");
+const canvas = document.getElementById("canvas");
+const overlay = document.getElementById("overlay");
+
+const ctx = canvas.getContext("2d");
+const ctxO = overlay.getContext("2d");
+
+const estado = document.getElementById("estado");
+
+/* ==========================================================
+   CONEXIÓN CON GOOGLE APPS SCRIPT
+   JSONP permite consultar el servidor desde GitHub Pages.
+   Código.gs debe admitir las acciones indicadas abajo.
+========================================================== */
+
+function llamarAPI(accion, datos, callback) {
+  const nombreCallback =
+    "omrCallback_" + Date.now() + "_" +
+    Math.random().toString(36).slice(2);
+
+  const script = document.createElement("script");
+
+  const temporizador = setTimeout(function() {
+    limpiar();
+    callback({
+      success: false,
+      mensaje: "Tiempo de espera agotado. Verifique la conexión con Apps Script."
+    });
+  }, 30000);
+
+  function limpiar() {
+    clearTimeout(temporizador);
+
+    if (script.parentNode) {
+      script.parentNode.removeChild(script);
+    }
+
+    try {
+      delete window[nombreCallback];
+    } catch (e) {
+      window[nombreCallback] = undefined;
+    }
   }
-  try{localStorage.setItem('OMR_API_URL',url);}catch(e){}
-  estado.innerText='URL de Apps Script guardada. Preparando cámara…';
-}
-function obtenerApiUrl(){return document.getElementById('apiUrl').value.trim();}
-function opencvCargado(){
-  if(window.cv && cv.Mat){cvReady=true;activarBotonProcesar();}
-  else if(window.cv){cv.onRuntimeInitialized=()=>{cvReady=true;activarBotonProcesar();};}
-}
-function activarBotonProcesar(){
-  if(video.readyState>=2 && cvReady) document.getElementById('btnProcesar').disabled=false;
-  if(cvReady && video.readyState<2) estado.innerText='OpenCV listo. Esperando cámara…';
-}
 
-/* Llamada JSONP: necesaria porque la página se publica en GitHub Pages,
-   fuera del dominio de Apps Script. */
-function llamarAPI(action,payload,success,failure){
-  const base=obtenerApiUrl();
-  if(!base){estado.innerText='Configure primero la URL de Apps Script.'; if(failure)failure(new Error('Falta URL de Apps Script')); return;}
-  const callback='omrCallback_'+Date.now()+'_'+Math.floor(Math.random()*1000000);
-  const script=document.createElement('script');
-  const params=new URLSearchParams();
-  params.set('action',action); params.set('callback',callback);
-  if(action==='obtenerDocumento') params.set('qr',payload.qr||'');
-  else params.set('payload',JSON.stringify(payload||{}));
-  let finalizado=false;
-  const limpiar=()=>{if(script.parentNode)script.parentNode.removeChild(script);try{delete window[callback];}catch(e){window[callback]=undefined;}};
-  const temporizador=setTimeout(()=>{if(finalizado)return;finalizado=true;limpiar();const err=new Error('Tiempo de espera agotado. Verifique la URL y el despliegue de Apps Script.');if(failure)failure(err);},20000);
-  window[callback]=function(res){if(finalizado)return;finalizado=true;clearTimeout(temporizador);limpiar();if(success)success(res);};
-  script.onerror=()=>{if(finalizado)return;finalizado=true;clearTimeout(temporizador);limpiar();const err=new Error('No se pudo conectar con Apps Script. Revise el despliegue como aplicación web.');if(failure)failure(err);};
-  script.src=base+(base.includes('?')?'&':'?')+params.toString();
-  document.body.appendChild(script);
+  window[nombreCallback] = function(respuesta) {
+    limpiar();
+    callback(respuesta);
+  };
+
+  const parametros = new URLSearchParams();
+
+  parametros.set("action", accion);
+  parametros.set("payload", JSON.stringify(datos || {}));
+  parametros.set("callback", nombreCallback);
+
+  script.src = API_URL + "?" + parametros.toString();
+
+  script.onerror = function() {
+    limpiar();
+
+    callback({
+      success: false,
+      mensaje: "No se pudo conectar con Google Apps Script."
+    });
+  };
+
+  document.head.appendChild(script);
 }
 
 /* ==========================================================
-   CÁMARA
-   ========================================================== */
-async function iniciarCamara(){
-  try{
-    if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia) throw new Error('Este navegador no permite acceder a la cámara. Abra la página con HTTPS.');
-    const stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'},width:{ideal:1920},height:{ideal:1080},frameRate:{ideal:30}},audio:false});
-    video.srcObject=stream; videoTrack=stream.getVideoTracks()[0]; await video.play();
-    const settings=videoTrack.getSettings(); console.log('Resolución real:',settings.width,settings.height);
-    const caps=videoTrack.getCapabilities?videoTrack.getCapabilities():{};
-    if(!caps.torch){document.getElementById('btnFlash').disabled=true;document.getElementById('btnFlash').innerText='🚫 Sin linterna';}
-    video.onloadedmetadata=()=>{activarBotonProcesar();estado.innerText=cvReady?'Cámara y OpenCV listos. Enfoque la hoja y el QR.':'Cámara lista. Esperando OpenCV…';};
-    activarBotonProcesar();
-  }catch(error){estado.innerText='❌ No se pudo iniciar la cámara: '+error.message;console.error(error);}
+   INICIALIZAR CÁMARA
+========================================================== */
+
+if (!navigator.mediaDevices ||
+    !navigator.mediaDevices.getUserMedia) {
+
+  estado.innerText =
+    "❌ La cámara requiere HTTPS y permisos del navegador.";
+
+} else {
+
+  navigator.mediaDevices.getUserMedia({
+    video: {
+      facingMode: { ideal: "environment" },
+      width: { ideal: 1920 },
+      height: { ideal: 1080 },
+      aspectRatio: 1.7777777778,
+      frameRate: { ideal: 30 }
+    },
+    audio: false
+  })
+  .then(function(stream) {
+
+    video.srcObject = stream;
+    videoTrack = stream.getVideoTracks()[0];
+
+    const settings = videoTrack.getSettings();
+
+    console.log(
+      "Resolución real:",
+      settings.width,
+      settings.height
+    );
+
+    const capabilities = videoTrack.getCapabilities();
+
+    if (!capabilities.torch) {
+      document.getElementById("btnFlash").disabled = true;
+      document.getElementById("btnFlash").innerText =
+        "🚫 Sin linterna";
+    }
+
+    estado.innerText = "Cámara lista para escanear.";
+
+  })
+  .catch(function(error) {
+    console.error(error);
+    estado.innerText =
+      "❌ No se pudo iniciar la cámara. Verifique los permisos.";
+  });
 }
-function detenerCamara(){if(video.srcObject){video.srcObject.getTracks().forEach(t=>t.stop());video.srcObject=null;}videoTrack=null;document.getElementById('btnProcesar').disabled=true;estado.innerText='Cámara detenida.';}
+
+/* ==========================================================
+   ESPERAR A QUE OPENCV ESTÉ LISTO
+========================================================== */
+
+function esperarOpenCV() {
+  if (typeof cv !== "undefined" && cv.Mat) {
+    console.log("OpenCV listo");
+    return;
+  }
+
+  if (typeof cv !== "undefined") {
+    cv.onRuntimeInitialized = function() {
+      console.log("OpenCV listo");
+    };
+  }
+}
 
 /* ==========================================================
    PROCESAMIENTO OMR + QR
-   ========================================================== */
-function procesar(){
-  if(!cvReady||!video.videoWidth){estado.innerText='Espere a que la cámara y OpenCV estén listos.';return;}
-  if(procesando)return; procesando=true;
-  try{
-    canvas.width=video.videoWidth;canvas.height=video.videoHeight;
-    overlay.width=video.videoWidth;overlay.height=video.videoHeight;
-    ctx.drawImage(video,0,0,canvas.width,canvas.height);
-    const src=cv.imread(canvas),gray=new cv.Mat(),bin=new cv.Mat();
-    try{
-      cv.cvtColor(src,gray,cv.COLOR_RGBA2GRAY);cv.GaussianBlur(gray,gray,new cv.Size(5,5),0);
-      cv.adaptiveThreshold(gray,bin,255,cv.ADAPTIVE_THRESH_GAUSSIAN_C,cv.THRESH_BINARY_INV,31,7);
+========================================================== */
+
+function procesar() {
+
+  if (procesando) return;
+
+  if (!video.videoWidth || !video.videoHeight) {
+    estado.innerText = "❌ La cámara todavía no está lista.";
+    return;
+  }
+
+  if (typeof cv === "undefined" || !cv.Mat) {
+    estado.innerText = "⏳ Cargando OpenCV…";
+    return;
+  }
+
+  if (typeof jsQR !== "function") {
+    estado.innerText = "❌ No se pudo cargar el lector QR.";
+    return;
+  }
+
+  procesando = true;
+
+  try {
+
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+
+    overlay.width = video.videoWidth;
+    overlay.height = video.videoHeight;
+
+    ctx.drawImage(video, 0, 0);
+
+    const src = cv.imread(canvas);
+    const gray = new cv.Mat();
+    const bin = new cv.Mat();
+
+    try {
+
+      cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+      cv.GaussianBlur(gray, gray, new cv.Size(5, 5), 0);
+
+      cv.adaptiveThreshold(
+        gray,
+        bin,
+        255,
+        cv.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv.THRESH_BINARY_INV,
+        31,
+        7
+      );
+
       dibujarAreas();
+
       leerOMR(bin);
       leerQRAutomatico();
-      if(omrOK&&qrOK) calcularAntesDeGuardar();
-      else if(!omrOK&&!qrOK) estado.innerText='No se pudo leer OMR ni QR. Ajuste la hoja y vuelva a procesar.';
-      else if(!omrOK) estado.innerText='QR leído; no se detectaron correctamente las burbujas.';
-      else estado.innerText='OMR leído; no se detectó el QR.';
-    }finally{src.delete();gray.delete();bin.delete();}
-  }catch(error){estado.innerText='❌ Error al procesar: '+error.message;console.error(error);}
-  finally{procesando=false;}
-}
-function dibujarAreas(){const W=canvas.width,H=canvas.height;ctxO.clearRect(0,0,W,H);ctxO.strokeStyle='red';ctxO.lineWidth=3;ctxO.strokeRect(AREA_OMR.x*W,AREA_OMR.y*H,AREA_OMR.w*W,AREA_OMR.h*H);}
-function leerOMR(bin){
-  const W=canvas.width,H=canvas.height;
-  const rx=Math.round(AREA_OMR.x*W),ry=Math.round(AREA_OMR.y*H),rw=Math.round(AREA_OMR.w*W),rh=Math.round(AREA_OMR.h*H);
-  const rect=new cv.Rect(rx,ry,rw,rh),src=cv.imread(canvas),gray=new cv.Mat();
-  let roiBin=null,roiGray=null,contours=null,hierarchy=null;
-  try{
-    cv.cvtColor(src,gray,cv.COLOR_RGBA2GRAY);roiBin=bin.roi(rect);roiGray=gray.roi(rect);
-    contours=new cv.MatVector();hierarchy=new cv.Mat();
-    cv.findContours(roiBin,contours,hierarchy,cv.RETR_EXTERNAL,cv.CHAIN_APPROX_SIMPLE);
-    const burbujas=[];
-    for(let i=0;i<contours.size();i++){
-      const cnt=contours.get(i);const area=cv.contourArea(cnt);if(area<300||area>3000)continue;
-      const peri=cv.arcLength(cnt,true);if(!peri)continue;const circ=4*Math.PI*area/(peri*peri);if(circ<0.6)continue;
-      const r=cv.boundingRect(cnt);burbujas.push({x:r.x,y:r.y,w:r.width,h:r.height});
+
+      if (omrOK && qrOK) {
+        calcularAntesDeGuardar();
+      }
+
+    } finally {
+      src.delete();
+      gray.delete();
+      bin.delete();
     }
-    if(burbujas.length<30){omrOK=false;estado.innerText='❌ No se detectan suficientes burbujas dentro del área roja.';return;}
-    burbujas.sort((a,b)=>a.y-b.y);const filas=[];const toleranciaY=20;
-    burbujas.forEach(b=>{let agregado=false;for(const f of filas){if(Math.abs(f[0].y-b.y)<toleranciaY){f.push(b);agregado=true;break;}}if(!agregado)filas.push([b]);});
-    filas.forEach(f=>f.sort((a,b)=>a.x-b.x));
-    if(filas.length<3){omrOK=false;estado.innerText='❌ No se detectan filas correctamente.';return;}
-    const matriz=filas.slice(0,3),letras=['A','B','C','D'];respuestas=[];nota=0;let pregunta=0;
-    const totalCols=Math.max(...matriz.map(f=>f.length));
-    for(let col=0;col<totalCols&&pregunta<10;col+=4){
-      for(let fila=0;fila<3&&pregunta<10;fila++){
-        const grupo=[];for(let k=0;k<4;k++)if(matriz[fila][col+k])grupo.push(matriz[fila][col+k]);
-        if(grupo.length<4)continue;
-        const valores=[];
-        grupo.forEach((b,j)=>{const rroi=roiGray.roi(new cv.Rect(b.x,b.y,b.w,b.h));const media=cv.mean(rroi)[0];rroi.delete();valores.push({indice:j,oscuridad:255-media});ctxO.strokeStyle='red';ctxO.lineWidth=3;ctxO.strokeRect(rx+b.x,ry+b.y,b.w,b.h);});
-        valores.sort((a,b)=>b.oscuridad-a.oscuridad);const principal=valores[0],segunda=valores[1];const UMBRAL_MARCADO=70,DIFERENCIA_MIN=26;
-        if(principal.oscuridad<UMBRAL_MARCADO){respuestas.push('');}
-        else if(segunda&&segunda.oscuridad>UMBRAL_MARCADO&&Math.abs(principal.oscuridad-segunda.oscuridad)<DIFERENCIA_MIN){respuestas.push('DOBLE');[principal,segunda].forEach(obj=>{const b=grupo[obj.indice];ctxO.fillStyle='rgba(0,255,255,0.4)';ctxO.fillRect(rx+b.x,ry+b.y,b.w,b.h);ctxO.strokeStyle='blue';ctxO.lineWidth=4;ctxO.strokeRect(rx+b.x,ry+b.y,b.w,b.h);});}
-        else{const resp=letras[principal.indice];respuestas.push(resp);const b=grupo[principal.indice];ctxO.fillStyle='rgba(0,255,0,0.35)';ctxO.fillRect(rx+b.x,ry+b.y,b.w,b.h);ctxO.strokeStyle='lime';ctxO.lineWidth=3;ctxO.strokeRect(rx+b.x,ry+b.y,b.w,b.h);}
+
+  } catch (error) {
+
+    console.error(error);
+    estado.innerText = "❌ Error durante el procesamiento OMR.";
+
+  } finally {
+    procesando = false;
+  }
+}
+
+/* ==========================================================
+   DIBUJAR ÁREA DE DETECCIÓN
+========================================================== */
+
+function dibujarAreas() {
+
+  const W = canvas.width;
+  const H = canvas.height;
+
+  ctxO.clearRect(0, 0, W, H);
+
+  ctxO.strokeStyle = "red";
+  ctxO.lineWidth = 3;
+
+  ctxO.strokeRect(
+    AREA_OMR.x * W,
+    AREA_OMR.y * H,
+    AREA_OMR.w * W,
+    AREA_OMR.h * H
+  );
+}
+
+/* ==========================================================
+   LEER OMR
+========================================================== */
+
+function leerOMR(bin) {
+
+  const W = canvas.width;
+  const H = canvas.height;
+
+  const rx = Math.round(AREA_OMR.x * W);
+  const ry = Math.round(AREA_OMR.y * H);
+  const rw = Math.round(AREA_OMR.w * W);
+  const rh = Math.round(AREA_OMR.h * H);
+
+  let src = null;
+  let gray = null;
+  let roiBin = null;
+  let roiGray = null;
+  let contours = null;
+  let hierarchy = null;
+
+  try {
+
+    src = cv.imread(canvas);
+    gray = new cv.Mat();
+
+    cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+
+    const rect = new cv.Rect(rx, ry, rw, rh);
+
+    roiBin = bin.roi(rect);
+    roiGray = gray.roi(rect);
+
+    contours = new cv.MatVector();
+    hierarchy = new cv.Mat();
+
+    cv.findContours(
+      roiBin,
+      contours,
+      hierarchy,
+      cv.RETR_EXTERNAL,
+      cv.CHAIN_APPROX_SIMPLE
+    );
+
+    const burbujas = [];
+
+    for (let i = 0; i < contours.size(); i++) {
+
+      const cnt = contours.get(i);
+      const area = cv.contourArea(cnt);
+
+      if (area < 300 || area > 3000) continue;
+
+      const peri = cv.arcLength(cnt, true);
+
+      if (peri === 0) continue;
+
+      const circ = 4 * Math.PI * area / (peri * peri);
+
+      if (circ < 0.6) continue;
+
+      const r = cv.boundingRect(cnt);
+
+      burbujas.push({
+        x: r.x,
+        y: r.y,
+        w: r.width,
+        h: r.height
+      });
+    }
+
+    if (burbujas.length < 30) {
+      omrOK = false;
+      estado.innerText = "❌ No se detectan suficientes burbujas.";
+      return;
+    }
+
+    burbujas.sort((a, b) => a.y - b.y);
+
+    const filas = [];
+    const toleranciaY = 20;
+
+    burbujas.forEach(function(b) {
+
+      let agregado = false;
+
+      for (const f of filas) {
+
+        if (Math.abs(f[0].y - b.y) < toleranciaY) {
+          f.push(b);
+          agregado = true;
+          break;
+        }
+      }
+
+      if (!agregado) filas.push([b]);
+    });
+
+    filas.forEach(function(f) {
+      f.sort((a, b) => a.x - b.x);
+    });
+
+    if (filas.length < 3) {
+      omrOK = false;
+      estado.innerText =
+        "❌ No se detectan correctamente las filas.";
+      return;
+    }
+
+    const matriz = filas.slice(0, 3);
+    const letras = ["A", "B", "C", "D"];
+
+    respuestas = [];
+    nota = 0;
+
+    let pregunta = 0;
+
+    const totalCols = Math.max(
+      ...matriz.map(f => f.length)
+    );
+
+    for (let col = 0; col < totalCols; col += 4) {
+
+      for (let fila = 0; fila < 3; fila++) {
+
+        if (pregunta >= 10) break;
+
+        const grupo = [];
+
+        for (let k = 0; k < 4; k++) {
+          if (matriz[fila][col + k]) {
+            grupo.push(matriz[fila][col + k]);
+          }
+        }
+
+        if (grupo.length < 4) continue;
+
+        const valores = [];
+
+        grupo.forEach(function(b, j) {
+
+          const roi = roiGray.roi(
+            new cv.Rect(b.x, b.y, b.w, b.h)
+          );
+
+          const media = cv.mean(roi)[0];
+          roi.delete();
+
+          const oscuridad = 255 - media;
+
+          valores.push({
+            indice: j,
+            oscuridad: oscuridad
+          });
+
+          ctxO.strokeStyle = "red";
+          ctxO.lineWidth = 6;
+
+          ctxO.strokeRect(
+            rx + b.x,
+            ry + b.y,
+            b.w,
+            b.h
+          );
+        });
+
+        valores.sort(
+          (a, b) => b.oscuridad - a.oscuridad
+        );
+
+        const principal = valores[0];
+        const segunda = valores[1];
+
+        const UMBRAL_MARCADO = 70;
+        const DIFERENCIA_MIN = 26;
+
+        if (principal.oscuridad < UMBRAL_MARCADO) {
+
+          respuestas.push("DOBLE");
+
+        } else if (
+          segunda &&
+          segunda.oscuridad > UMBRAL_MARCADO &&
+          Math.abs(
+            principal.oscuridad - segunda.oscuridad
+          ) < DIFERENCIA_MIN
+        ) {
+
+          respuestas.push("DOBLE");
+
+          [principal, segunda].forEach(function(obj) {
+
+            const b = grupo[obj.indice];
+
+            ctxO.fillStyle = "rgba(0,255,255,0.4)";
+            ctxO.fillRect(
+              rx + b.x,
+              ry + b.y,
+              b.w,
+              b.h
+            );
+
+            ctxO.strokeStyle = "blue";
+            ctxO.lineWidth = 6;
+
+            ctxO.strokeRect(
+              rx + b.x,
+              ry + b.y,
+              b.w,
+              b.h
+            );
+          });
+
+        } else {
+
+          const resp = letras[principal.indice];
+          respuestas.push(resp);
+
+          const b = grupo[principal.indice];
+
+          ctxO.fillStyle = "rgba(0,255,0,0.35)";
+          ctxO.fillRect(
+            rx + b.x,
+            ry + b.y,
+            b.w,
+            b.h
+          );
+
+          ctxO.strokeStyle = "lime";
+          ctxO.lineWidth = 3;
+
+          ctxO.strokeRect(
+            rx + b.x,
+            ry + b.y,
+            b.w,
+            b.h
+          );
+        }
+
         pregunta++;
       }
     }
-    while(respuestas.length<10)respuestas.push('');
-    omrOK=respuestas.length>=10;estado.innerText=omrOK?'✅ OMR leído. Verifique las respuestas después de leer el QR.':'❌ No se pudieron leer las 10 preguntas.';
-  }finally{if(roiBin)roiBin.delete();if(roiGray)roiGray.delete();gray.delete();src.delete();if(contours)contours.delete();if(hierarchy)hierarchy.delete();}
+
+    if (respuestas.length !== 10) {
+      omrOK = false;
+      estado.innerText =
+        "❌ Se detectaron " + respuestas.length +
+        " respuestas; se requieren 10.";
+      return;
+    }
+
+    omrOK = true;
+    estado.innerText = "✅ OMR leído correctamente.";
+
+  } catch (error) {
+
+    omrOK = false;
+    console.error(error);
+    estado.innerText = "❌ Error al leer las burbujas.";
+
+  } finally {
+
+    if (roiBin) roiBin.delete();
+    if (roiGray) roiGray.delete();
+    if (gray) gray.delete();
+    if (src) src.delete();
+    if (contours) contours.delete();
+    if (hierarchy) hierarchy.delete();
+  }
 }
-function leerQRAutomatico(){
-  const W=canvas.width,H=canvas.height;const img=ctx.getImageData(0,0,W,H);
-  const qr=jsQR(img.data,img.width,img.height,{inversionAttempts:'attemptBoth'});
-  if(!qr){qrOK=false;return;}
-  rudeQR=qr.data.trim();qrOK=true;ctxO.strokeStyle='cyan';ctxO.lineWidth=4;const p=qr.location;ctxO.beginPath();ctxO.moveTo(p.topLeftCorner.x,p.topLeftCorner.y);ctxO.lineTo(p.topRightCorner.x,p.topRightCorner.y);ctxO.lineTo(p.bottomRightCorner.x,p.bottomRightCorner.y);ctxO.lineTo(p.bottomLeftCorner.x,p.bottomLeftCorner.y);ctxO.closePath();ctxO.stroke();
+
+/* ==========================================================
+   LEER QR AUTOMÁTICAMENTE
+========================================================== */
+
+function leerQRAutomatico() {
+
+  const W = canvas.width;
+  const H = canvas.height;
+
+  const img = ctx.getImageData(0, 0, W, H);
+
+  const qr = jsQR(
+    img.data,
+    img.width,
+    img.height,
+    { inversionAttempts: "attemptBoth" }
+  );
+
+  if (!qr) {
+
+    qrOK = false;
+    estado.innerText += " | ⚠ QR no detectado";
+    return;
+  }
+
+  rudeQR = qr.data.trim();
+  qrOK = rudeQR.length > 0;
+
+  estado.innerText += " | ✅ QR leído automáticamente";
+
+  const p = qr.location;
+
+  ctxO.strokeStyle = "cyan";
+  ctxO.lineWidth = 4;
+
+  ctxO.beginPath();
+  ctxO.moveTo(p.topLeftCorner.x, p.topLeftCorner.y);
+  ctxO.lineTo(p.topRightCorner.x, p.topRightCorner.y);
+  ctxO.lineTo(p.bottomRightCorner.x, p.bottomRightCorner.y);
+  ctxO.lineTo(p.bottomLeftCorner.x, p.bottomLeftCorner.y);
+  ctxO.closePath();
+  ctxO.stroke();
 }
-function calcularAntesDeGuardar(){
-  estado.innerText='Calculando nota…';document.getElementById('btnEnviar').disabled=true;
-  llamarAPI('calcularOMR',{qr:rudeQR,respuestas:respuestas},function(res){
-    if(!res||!res.success){estado.innerText=res&&res.mensaje?res.mensaje:'No se pudo calcular la nota.';return;}
-    detalleActual=res.detalle||[];nota=res.nota;mostrarCorreccion(detalleActual,res.nota);
-    estado.innerText='Nota calculada. Revise las respuestas antes de enviar.';
-    document.getElementById('btnEnviar').disabled=false;
-  },function(err){estado.innerText='❌ Error al calcular: '+err.message;console.error(err);});
-}
-function enviar(){
-  if(!omrOK||!qrOK){estado.innerText='Primero procese correctamente el OMR y el QR.';return;}
-  document.getElementById('btnEnviar').disabled=true;estado.innerText='Guardando nota…';
-  llamarAPI('guardarOMR',{qr:rudeQR,respuestas:respuestas},function(res){
-    if(!res||!res.success){estado.innerText=res&&res.mensaje?res.mensaje:'No se pudo guardar la nota.';document.getElementById('btnEnviar').disabled=false;return;}
-    estado.innerText=res.mensaje||'Nota registrada correctamente.';mostrarCorreccion(res.detalle||[],res.nota);document.getElementById('btnEnviar').disabled=true;
-  },function(err){estado.innerText='❌ Error al enviar: '+err.message;document.getElementById('btnEnviar').disabled=false;console.error(err);});
-}
-function mostrarCorreccion(detalle,notaFinal){
-  let html=`<div style="font-size:clamp(36px,8vw,60px);color:#00ff88;font-weight:bold;margin:15px">NOTA FINAL: ${notaFinal}</div><hr>`;
-  detalle.forEach((item,i)=>{
-    const num=item.numero||i+1;
-    if(item.estado==='correcta')html+=`<div style="color:lime;font-size:clamp(22px,5vw,36px)">P${num}: ${item.alumno} ✔</div>`;
-    else if(item.estado==='incorrecta')html+=`<div style="color:red;font-size:clamp(22px,5vw,36px)">P${num}: ${item.alumno||'-'} ✘ <span style="color:yellow">(Correcta: ${item.correcta})</span></div>`;
-    else if(item.estado==='doble')html+=`<div style="color:orange;font-size:clamp(22px,5vw,36px)">P${num}: ❌ DOBLE MARCACIÓN <span style="color:yellow">(Correcta: ${item.correcta})</span></div>`;
-    else html+=`<div style="color:gray;font-size:clamp(22px,5vw,36px)">P${num}: - <span style="color:yellow">(Correcta: ${item.correcta})</span></div>`;
+
+/* ==========================================================
+   CALCULAR NOTA ANTES DE GUARDAR
+========================================================== */
+
+function calcularAntesDeGuardar() {
+
+  if (!omrOK || !qrOK) {
+    estado.innerText = "❌ Verifique el OMR y el QR.";
+    return;
+  }
+
+  estado.innerText = "Calculando nota…";
+
+  document.getElementById("btnEnviar").disabled = true;
+
+  llamarAPI("calcularOMR", {
+    qr: rudeQR,
+    respuestas: respuestas
+  }, function(res) {
+
+    if (!res || !res.success) {
+      estado.innerText =
+        res && res.mensaje
+          ? res.mensaje
+          : "Error al calcular la nota.";
+      return;
+    }
+
+    mostrarCorreccion(res.detalle, res.nota);
+
+    estado.innerText =
+      "Nota calculada. Revise antes de enviar.";
+
+    document.getElementById("btnEnviar").disabled = false;
   });
-  document.getElementById('resultado').innerHTML=html;
 }
-function reiniciar(){
-  respuestas=[];nota=0;rudeQR='';omrOK=false;qrOK=false;detalleActual=[];
-  document.getElementById('btnEnviar').disabled=true;document.getElementById('resultado').innerHTML='';
-  estado.innerText='Listo para nuevo escaneo. Enfoque la hoja y pulse Procesar OMR + QR.';
-  ctxO.clearRect(0,0,overlay.width,overlay.height);
+
+/* ==========================================================
+   ENVIAR Y GUARDAR RESULTADOS
+========================================================== */
+
+function enviar() {
+
+  if (enviando) return;
+
+  if (!omrOK || !qrOK || !respuestas.length) {
+    estado.innerText =
+      "❌ Primero debe leer correctamente el OMR y el QR.";
+    return;
+  }
+
+  enviando = true;
+
+  const boton = document.getElementById("btnEnviar");
+  boton.disabled = true;
+
+  estado.innerText = "Enviando resultados…";
+
+  llamarAPI("guardarOMR", {
+    qr: rudeQR,
+    respuestas: respuestas
+  }, function(res) {
+
+    enviando = false;
+
+    if (!res || !res.success) {
+
+      estado.innerText =
+        res && res.mensaje
+          ? res.mensaje
+          : "❌ Error al guardar los resultados.";
+
+      boton.disabled = false;
+      return;
+    }
+
+    estado.innerText = res.mensaje || "Resultados guardados.";
+
+    if (res.detalle) {
+      mostrarCorreccion(res.detalle, res.nota);
+    }
+
+    boton.disabled = true;
+  });
 }
-async function toggleFlash(){
-  if(!videoTrack)return;const capabilities=videoTrack.getCapabilities?videoTrack.getCapabilities():{};
-  if(!capabilities.torch){alert('Este dispositivo no soporta linterna');return;}
-  try{flashEncendido=!flashEncendido;await videoTrack.applyConstraints({advanced:[{torch:flashEncendido}]});document.getElementById('btnFlash').innerText=flashEncendido?'🔦 Apagar linterna':'🔦 Encender linterna';}
-  catch(error){flashEncendido=false;estado.innerText='No se pudo controlar la linterna: '+error.message;}
+
+/* ==========================================================
+   MOSTRAR CORRECCIÓN
+========================================================== */
+
+function mostrarCorreccion(detalle, notaFinal) {
+
+  const contenedor = document.getElementById("resultado");
+
+  let html = `
+    <div style="
+      font-size:60px;
+      color:#00ff88;
+      font-weight:bold;
+      margin:15px">
+      NOTA FINAL: ${notaFinal}
+    </div>
+    <hr>
+  `;
+
+  if (!Array.isArray(detalle)) {
+    contenedor.innerHTML = html;
+    return;
+  }
+
+  detalle.forEach(function(item, i) {
+
+    if (item.estado === "correcta") {
+
+      html += `
+        <div style="color:lime;font-size:36px">
+          P${i + 1}: ${item.alumno} ✔
+        </div>`;
+
+    } else if (item.estado === "incorrecta") {
+
+      html += `
+        <div style="color:red;font-size:36px">
+          P${i + 1}: ${item.alumno} ✘
+          <span style="color:yellow">
+            (Correcta: ${item.correcta})
+          </span>
+        </div>`;
+
+    } else if (item.estado === "doble") {
+
+      html += `
+        <div style="color:orange;font-size:36px">
+          P${i + 1}: ❌ DOBLE MARCACIÓN
+          <span style="color:yellow">
+            (Correcta: ${item.correcta})
+          </span>
+        </div>`;
+
+    } else {
+
+      html += `
+        <div style="color:gray;font-size:36px">
+          P${i + 1}: -
+          <span style="color:yellow">
+            (Correcta: ${item.correcta})
+          </span>
+        </div>`;
+    }
+  });
+
+  contenedor.innerHTML = html;
 }
-window.addEventListener('load',()=>{
-  try{const saved=localStorage.getItem('OMR_API_URL');if(saved)document.getElementById('apiUrl').value=saved;}catch(e){}
-  iniciarCamara();
-  setTimeout(()=>{if(window.cv&&cv.Mat)opencvCargado();},1000);
-});
+
+/* ==========================================================
+   REINICIAR
+========================================================== */
+
+function reiniciar() {
+
+  respuestas = [];
+  nota = 0;
+  rudeQR = "";
+
+  omrOK = false;
+  qrOK = false;
+  procesando = false;
+  enviando = false;
+
+  document.getElementById("btnEnviar").disabled = true;
+  document.getElementById("resultado").innerHTML = "";
+
+  ctxO.clearRect(0, 0, overlay.width, overlay.height);
+
+  estado.innerText = "Listo para nuevo escaneo.";
+}
+
+/* ==========================================================
+   LINTERNA
+========================================================== */
+
+async function toggleFlash() {
+
+  if (!videoTrack) return;
+
+  const capabilities = videoTrack.getCapabilities();
+
+  if (!capabilities.torch) {
+    alert("Este dispositivo no soporta linterna.");
+    return;
+  }
+
+  try {
+
+    flashEncendido = !flashEncendido;
+
+    await videoTrack.applyConstraints({
+      advanced: [{ torch: flashEncendido }]
+    });
+
+    document.getElementById("btnFlash").innerText =
+      flashEncendido
+        ? "🔦 Apagar linterna"
+        : "🔦 Encender linterna";
+
+  } catch (error) {
+
+    flashEncendido = false;
+    console.error(error);
+    alert("No se pudo activar la linterna.");
+  }
+}
+
+esperarOpenCV();
 </script>
 </body>
 </html>
